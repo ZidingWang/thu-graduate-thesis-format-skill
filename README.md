@@ -4,8 +4,6 @@
 
 依据《清华大学研究生学位论文写作指南》(研究生院,2025年3月版),在**不改动任何文字内容**的前提下,把已写好的论文 `.docx` 自动整改为符合学校格式规范的文档,并生成逐条修改清单供核对。
 
-> 姊妹项目:[Toflamus/tsinghua_senior_design_word_template_skill](https://github.com/Toflamus/tsinghua_senior_design_word_template_skill) —— 本科生综合论文训练(从零驱动学校模板生成)。本项目面向**已写完、需要整改格式**的研究生学位论文场景,二者可配合使用。
-
 ## 它做什么
 
 读取你写好的论文 docx,自动完成:
