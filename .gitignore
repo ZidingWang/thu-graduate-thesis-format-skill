@@ -2,8 +2,6 @@
 __pycache__/
 *.pyc
 
-# 模板/参考资料压缩包(不入库;格式规范已提炼进 references/format-spec.md)
-*.zip
 
 # 测试/中间产物
 *.docx
