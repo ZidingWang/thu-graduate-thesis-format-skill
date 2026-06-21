@@ -1,22 +1,20 @@
+# Python
 __pycache__/
-*.py[cod]
-*$py.class
+*.pyc
 
-.venv/
-venv/
-env/
+# 模板/参考资料压缩包(不入库;格式规范已提炼进 references/format-spec.md)
+*.zip
 
-.DS_Store
-Thumbs.db
-
+# 测试/中间产物
+*.docx
 structure_map.json
-before_report.json
-format_report.json
+degree_info.json
+*_report.json
 sections_report.json
 numbering_changes.json
 修改清单.md
-step*.docx
-final*.docx
-*_final.docx
-*_整改.docx
-*.pdf
+
+# 编辑器 / 系统
+.claude/
+.DS_Store
+Thumbs.db

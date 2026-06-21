@@ -122,8 +122,14 @@ ROLES = [
     "reference_entry",
     "toc_chapter", "toc_entry",
     "keywords",           # 关键词行(按正文格式)
+    "symbol_entry",       # 符号和缩略语说明条目:有专用版式(tab对齐/悬挂缩进),完全不动
+    "cv_entry",           # 个人简历、在学期间完成的相关学术成果:子标题居中/类别标签/
+                          # 参考文献式条目混排,整段保留模板版式,完全不动
     "cover", "skip",      # 封面/授权页等不动的部分
 ]
+# 注意:symbol_entry / cv_entry 故意不在 ROLE_SPEC 中——apply.py 对 role not in
+# ROLE_SPEC 直接跳过,从而保留模板里的专用版式(符号说明的两列对齐、个人简历的
+# 居中子标题与参考文献式成果条目),不被统一成正文格式改乱。
 
 ROLE_SPEC = {
     "chapter_title": CHAPTER_TITLE,

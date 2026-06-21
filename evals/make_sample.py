@@ -33,7 +33,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("-o", "--out", default="sample_thesis.docx",
                     help="输出 docx 路径,默认写到当前目录")
+    ap.add_argument("--degree", choices=["博士", "硕士"], default="博士",
+                    help="样本学位档次,影响封面学位标识(博硕正文格式相同),默认博士")
     args = ap.parse_args()
+    degree = args.degree
+    en_degree = "Doctor of Philosophy" if degree == "博士" else "Master of Science"
+    en_kind = "Dissertation" if degree == "博士" else "Thesis"
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -47,6 +52,24 @@ def main():
 
     C = WD_ALIGN_PARAGRAPH.CENTER
     L = WD_ALIGN_PARAGRAPH.LEFT
+
+    # —— 中文封面(含学位类别行,供 detect_degree.py 识别;封面区由 classify 标为 cover,不整改内容)——
+    add(doc, "基于深度学习的工业过程优化方法研究", size=26, cn="中易黑体", align=C, bold=True)
+    add(doc, f"(申请清华大学工学{degree}学位论文)", size=16, cn="宋体", align=C)
+    add(doc, "培养单位:自动化系", size=16, cn="仿宋", align=C)
+    add(doc, "学　　科:控制科学与工程", size=16, cn="仿宋", align=C)
+    add(doc, "研究生:张　三", size=16, cn="仿宋", align=C)
+    add(doc, "指导教师:李　四 教授", size=16, cn="仿宋", align=C)
+    # —— 英文封面(含英文学位行)——
+    add(doc, "Research on Deep-Learning-Based Industrial Process Optimization",
+        size=20, en="Arial", align=C, bold=True)
+    add(doc, f"{en_kind} submitted to Tsinghua University in partial fulfillment of "
+             f"the requirement for the degree of {en_degree} in Control Science and Engineering",
+        size=12, en="Times New Roman", align=C)
+    add(doc, "by Zhang San", size=12, en="Times New Roman", align=C)
+    # —— 关于学位论文使用授权的说明(博/硕标题相同,前置签名页)——
+    add(doc, "关于学位论文使用授权的说明", size=16, cn="宋体", align=C, bold=True)
+    add(doc, "本人完全了解清华大学有关保留、使用学位论文的规定。", size=12, cn="楷体")
 
     add(doc, "摘要", size=18, cn="宋体", align=C, bold=True, before=6, after=6)
     add(doc, "本文研究了基于深度学习的工业过程优化方法。针对传统方法在高维非线性系统中的局限,提出了一种混合建模框架。", size=12, cn="楷体", line=1.5)

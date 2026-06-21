@@ -11,7 +11,9 @@
 3. 页脚页码 PAGE 域,居中,TNR 五号,无修饰:
    - 摘要 → 符号和缩略语说明:大写罗马数字,从 Ⅰ 起连续;
    - 正文第一章 → 文末:阿拉伯数字,从 1 起连续。
-4. 摘要之前的前置区(封面/名单/授权):篇眉页脚清空。
+4. 摘要之前的前置区(封面/英文封面/名单/授权):篇眉页脚清空,且各封面页与摘要
+   均置于奇数页(另页右页)——这些都是单面印刷,双面打印时会自动在每页后补空白页
+   (符合打印格式;原本已是奇数页则不重复补)。用 --no-front-blank 可关闭补空白页。
    --cn-cover/--en-cover 指定封面所在段的"部分序号"时,对该节应用封面专用页边距。
 5. settings.xml 写入 updateFields,Word 打开时自动刷新目录/清单等所有域(免按 F9)。
 
@@ -20,6 +22,7 @@
 import argparse
 import copy
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -75,6 +78,181 @@ def find_parts(smap_paragraphs):
     return parts
 
 
+_CN_DIGITS = "零一二三四五六七八九"
+
+
+def _fmt_num(n, num_fmt):
+    """把序号 n 按 Word numFmt 转成字符串(覆盖章/附录常见格式)。"""
+    if num_fmt in ("upperLetter",):
+        return _alpha(n).upper()
+    if num_fmt in ("lowerLetter",):
+        return _alpha(n).lower()
+    if num_fmt in ("upperRoman", "lowerRoman"):
+        r = _roman(n)
+        return r.upper() if num_fmt == "upperRoman" else r.lower()
+    if num_fmt in ("chineseCounting", "chineseCountingThousand",
+                   "ideographTraditional", "ideographZodiac",
+                   "japaneseCounting", "chineseLegalSimplified"):
+        return _cn(n)
+    # decimal / decimalZero / decimalFullWidth / 其它 → 阿拉伯数字
+    return str(n)
+
+
+def _alpha(n):
+    s = ""
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        s = chr(97 + r) + s
+    return s or "a"
+
+
+def _roman(n):
+    table = [(1000, "m"), (900, "cm"), (500, "d"), (400, "cd"), (100, "c"),
+             (90, "xc"), (50, "l"), (40, "xl"), (10, "x"), (9, "ix"),
+             (5, "v"), (4, "iv"), (1, "i")]
+    out = ""
+    for v, s in table:
+        while n >= v:
+            out += s
+            n -= v
+    return out
+
+
+def _cn(n):
+    if n <= 0:
+        return str(n)
+    if n < 10:
+        return _CN_DIGITS[n]
+    if n == 10:
+        return "十"
+    if n < 20:
+        return "十" + _CN_DIGITS[n - 10]
+    if n < 100:
+        t, o = divmod(n, 10)
+        return _CN_DIGITS[t] + "十" + (_CN_DIGITS[o] if o else "")
+    return str(n)
+
+
+def _build_numbering_resolver(doc):
+    """返回 resolve(numId) -> (numFmt, lvlText, start) | None,自动跟随
+    numStyleLink / styleLink 链找到真正定义层级的 abstractNum。"""
+    try:
+        nb = doc.part.numbering_part.element
+    except Exception:
+        return lambda _x: None
+    num2abs, abs_def, by_stylelink, abs_numstylelink = {}, {}, {}, {}
+    for n in nb.findall(qn("w:num")):
+        a = n.find(qn("w:abstractNumId"))
+        if a is not None:
+            num2abs[n.get(qn("w:numId"))] = a.get(qn("w:val"))
+    for an in nb.findall(qn("w:abstractNum")):
+        aid = an.get(qn("w:abstractNumId"))
+        sl = an.find(qn("w:styleLink")); nsl = an.find(qn("w:numStyleLink"))
+        if sl is not None:
+            by_stylelink[sl.get(qn("w:val"))] = aid
+        if nsl is not None:
+            abs_numstylelink[aid] = nsl.get(qn("w:val"))
+        for l in an.findall(qn("w:lvl")):
+            if l.get(qn("w:ilvl")) == "0":
+                ft = l.find(qn("w:numFmt")); tx = l.find(qn("w:lvlText"))
+                stt = l.find(qn("w:start"))
+                if ft is not None and tx is not None:
+                    abs_def[aid] = (ft.get(qn("w:val")), tx.get(qn("w:val")),
+                                    int(stt.get(qn("w:val"))) if stt is not None else 1)
+    def resolve(num_id):
+        a = num2abs.get(num_id)
+        if a is None:
+            return None
+        if a in abs_def:
+            return abs_def[a]
+        s = abs_numstylelink.get(a)            # 跟随 numStyleLink → styleLink
+        if s and s in by_stylelink and by_stylelink[s] in abs_def:
+            return abs_def[by_stylelink[s]]
+        return None
+    return resolve
+
+
+def _build_style_numid(doc):
+    """返回 styleId -> 直接 numId(含 basedOn 继承)的解析函数。"""
+    sp = doc.styles.element
+    info = {}
+    for s in sp.findall(qn("w:style")):
+        sid = s.get(qn("w:styleId"))
+        bo = s.find(qn("w:basedOn"))
+        npr = s.find(qn("w:pPr") + "/" + qn("w:numPr") + "/" + qn("w:numId"))
+        info[sid] = {
+            "basedOn": bo.get(qn("w:val")) if bo is not None else None,
+            "numId": npr.get(qn("w:val")) if npr is not None else None,
+        }
+    def style_numid(sid):
+        seen = set()
+        while sid and sid in info and sid not in seen:
+            seen.add(sid)
+            if info[sid]["numId"]:
+                return info[sid]["numId"]
+            sid = info[sid]["basedOn"]
+        return None
+    return style_numid
+
+
+def _para_numid(p, style_numid):
+    """段落的有效 numId:优先直接 numPr,否则取段落样式链上的 numId。"""
+    npr = p._p.find(qn("w:pPr") + "/" + qn("w:numPr") + "/" + qn("w:numId"))
+    if npr is not None:
+        return npr.get(qn("w:val"))
+    ps = p._p.find(qn("w:pPr") + "/" + qn("w:pStyle"))
+    if ps is not None:
+        return style_numid(ps.get(qn("w:val")))
+    return None
+
+
+def _has_literal_number(text, lvl_text):
+    """正文标题文本是否已经手写了编号(如'第一章…'/'附录A…'),避免重复添加。
+    依据 lvlText 模板(如 '第\xa0%1\xa0章'、'附录%1')构造正则,
+    把空格/不间断空格当作可有可无。"""
+    if "%1" not in lvl_text:
+        return False
+    pre, post = lvl_text.split("%1", 1)
+    def lit(s):
+        # 允许每个可见字符之间出现任意空白(含半角/全角/不间断空格)
+        chars = [re.escape(c) for c in s.replace("\xa0", " ") if not c.isspace()]
+        return r"\s*".join(chars)
+    numtok = r"[0-9０-９A-Za-zⅠ-Ⅻⅰ-ⅻ一二三四五六七八九十百千零〇两]+"
+    pat = r"^\s*" + lit(pre) + r"\s*" + numtok + r"\s*" + lit(post)
+    return re.match(pat, text.replace("\xa0", " ")) is not None
+
+
+def assign_chapter_headers(doc, parts):
+    """为每个章级部分计算与正文标题完全一致的篇眉文本 part['header']:
+      • 文本已手写编号(第一章…/附录A…) → 原样,不重复加;
+      • 文本未写编号但段落自动编号(第N章 / 附录X 等) → 解析真实编号后前置,
+        编号格式(decimal/upperLetter/chineseCounting…)与计数(各体例独立)
+        均按文档实际定义还原;
+      • 无编号(摘要/参考文献/致谢等) → 原文。
+    始终保留原文的分隔空格,使篇眉与正文标题逐字一致。"""
+    resolve = _build_numbering_resolver(doc)
+    style_numid = _build_style_numid(doc)
+    P = doc.paragraphs
+    counters = {}                       # 每个 (numFmt,lvlText) 体例独立计数
+    for part in parts:
+        p = P[part["start"]]
+        raw = p.text
+        part.setdefault("header", raw)
+        num_id = _para_numid(p, style_numid)
+        info = resolve(num_id) if num_id else None
+        if info is None:                # 无自动编号:原文(可能已含手写编号)
+            part["header"] = raw
+            continue
+        num_fmt, lvl_text, start = info
+        if _has_literal_number(raw, lvl_text):   # 已手写编号,勿重复
+            part["header"] = raw
+            continue
+        key = (num_fmt, lvl_text)
+        counters[key] = counters.get(key, start - 1) + 1
+        prefix = lvl_text.replace("%1", _fmt_num(counters[key], num_fmt))
+        part["header"] = prefix + raw
+
+
 def clone_body_sectpr(doc):
     """克隆文档末尾 body 级 sectPr 作为插入模板,剥离页眉页脚引用与页码设置。"""
     body = doc.element.body
@@ -123,29 +301,51 @@ def style_header_run(run):
     run._r.get_or_add_rPr().get_or_add_rFonts().set(qn("w:eastAsia"), spec.F_SONG)
 
 
+def clear_hdrftr(part):
+    """彻底清空页眉/页脚:删除其下所有元素(含 w:sdt 内容控件、表格、段落),
+    再加回一个空段落供写入。
+
+    修复:Word "插入页码" 库会把页码域包进 <w:sdt> 内容控件;python-docx 的
+    .paragraphs 不会进入 w:sdt,旧代码只删可见段落的 run,残留的 sdt 页码域会与
+    新写入的 PAGE 域叠加,导致同一页出现两个页号。改为整体清空根元素即可避免。"""
+    el = part._element  # <w:hdr> / <w:ftr>
+    for child in list(el):
+        el.remove(child)
+    return part.add_paragraph()
+
+
+def _set_header_bottom_border(p):
+    """给页眉段落加底部横线(清华模板视觉风格,0.75 磅单线)。
+    sz 单位 1/8 磅:sz=6 → 0.75pt(常用),sz=4 → 0.5pt。"""
+    from docx.oxml import OxmlElement
+    pPr = p._p.get_or_add_pPr()
+    for old in pPr.findall(qn("w:pBdr")):
+        pPr.remove(old)
+    pBdr = OxmlElement("w:pBdr")
+    bottom = OxmlElement("w:bottom")
+    bottom.set(qn("w:val"), "single")
+    bottom.set(qn("w:sz"), "6")
+    bottom.set(qn("w:space"), "1")
+    bottom.set(qn("w:color"), "auto")
+    pBdr.append(bottom)
+    pPr.append(pBdr)
+
+
 def write_header(section, text):
     hdr = section.header
     hdr.is_linked_to_previous = False
-    # 清空原有段落内容(只删 run,保留首段)
-    for p in list(hdr.paragraphs[1:]):
-        p._p.getparent().remove(p._p)
-    p = hdr.paragraphs[0]
-    for r in list(p.runs):
-        r._r.getparent().remove(r._r)
+    p = clear_hdrftr(hdr)
     p.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
     if text:
         run = p.add_run(text)
         style_header_run(run)
+        _set_header_bottom_border(p)   # 仅在有篇眉文字时画横线;封面等空篇眉不画
 
 
 def write_footer_pagenum(section, empty=False):
     ftr = section.footer
     ftr.is_linked_to_previous = False
-    for p in list(ftr.paragraphs[1:]):
-        p._p.getparent().remove(p._p)
-    p = ftr.paragraphs[0]
-    for r in list(p.runs):
-        r._r.getparent().remove(r._r)
+    p = clear_hdrftr(ftr)
     p.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
     if empty:
         return
@@ -197,6 +397,32 @@ def disable_even_odd_and_titlepg(doc, sections):
             sec._sectPr.remove(el)
 
 
+def section_nonempty(doc):
+    """按文档顺序判断每个分节是否含**实际内容**(非空文字或图片)。
+    返回 list[bool],长度 = 分节数。用于:只把"有内容"的封面分节置于奇数页,
+    而文档里原有的空白分节(已经充当单面打印的空白页)保持原样,避免补出双倍空白。"""
+    res = []
+    has = False
+    for child in doc.element.body.iterchildren():
+        if child.tag == qn("w:p"):
+            if any((t.text or "").strip() for t in child.findall(".//" + qn("w:t"))) \
+                    or child.find(".//" + qn("w:drawing")) is not None \
+                    or child.find(".//" + qn("w:pict")) is not None:
+                has = True
+            if child.find(qn("w:pPr") + "/" + qn("w:sectPr")) is not None:
+                res.append(has)
+                has = False
+        elif child.tag == qn("w:tbl"):
+            if any((t.text or "").strip() for t in child.findall(".//" + qn("w:t"))) \
+                    or child.find(".//" + qn("w:drawing")) is not None \
+                    or child.find(".//" + qn("w:pict")) is not None:
+                has = True
+        elif child.tag == qn("w:sectPr"):     # body 末尾的最后一节
+            res.append(has)
+            has = False
+    return res
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("docx")
@@ -205,6 +431,9 @@ def main():
     ap.add_argument("-r", "--report", default="sections_report.json")
     ap.add_argument("--cn-cover", type=int, help="中文封面的部分序号(0起)")
     ap.add_argument("--en-cover", type=int, help="英文封面的部分序号(0起)")
+    ap.add_argument("--no-front-blank", action="store_true",
+                    help="不为前置封面区补单面打印空白页"
+                         "(默认:各封面页与摘要置于奇数页/另页右页,双面打印时自动补空白页)")
     args = ap.parse_args()
 
     doc = Document(args.docx)
@@ -218,19 +447,34 @@ def main():
     body_first = next((p for p in parts if p["kind"] == "body"), None)
     front_first = next((p for p in parts if p["kind"] == "front"), None)
 
+    # 为自动编号的正文章补回"第N章"(篇眉需与正文标题一致)
+    assign_chapter_headers(doc, parts)
     insert_section_breaks(doc, parts, report)
 
-    # 分节后,doc.sections 与"前置区(可选)+各部分"一一对应
+    # 分节后,doc.sections = 前置区(可有多节)+ 各部分,逐一对应。
+    # 前置区(封面/名单/授权)在清华官方模板里常含多个分节(各有专用页边距),
+    # 故 offset 不能假设为 1,应按实际反算:offset = 总节数 − 部分数。
     sections = doc.sections
-    has_preamble = parts[0]["start"] > 0  # 第一个部分之前还有内容(封面区)
-    offset = 1 if has_preamble else 0
-    if len(sections) != len(parts) + offset:
-        sys.exit(f"分节数({len(sections)})与部分数({len(parts)}+{offset})不符,中止")
+    offset = len(sections) - len(parts)
+    if offset < 0:
+        sys.exit(f"分节数({len(sections)})少于部分数({len(parts)}),中止")
 
-    if has_preamble:
-        write_header(sections[0], "")
-        write_footer_pagenum(sections[0], empty=True)
-        report.append({"action": "前置区(摘要前)篇眉页脚清空", "section": 0})
+    # 清空全部前置区分节的篇眉页脚(封面等不显示页眉页码);并把各前置区分节
+    # 置于奇数页(另页右页)——封面/英文封面/名单/授权说明都是单面印刷,双面
+    # 打印时奇数页分节符会自动在每页后补一张空白页(若原本已是奇数页则不重复补)。
+    front_blank = not args.no_front_blank
+    nonempty = section_nonempty(doc) if front_blank else []
+    for k in range(offset):
+        # 仅把"有内容"的封面分节(封面/英文封面/名单/授权)置于奇数页;原有的空白
+        # 分节保持原样,这样既能给缺空白页的文档补齐,又不会给已有空白页的文档补重。
+        odd = k > 0 and front_blank and k < len(nonempty) and nonempty[k]
+        if odd:
+            sections[k].start_type = WD_SECTION.ODD_PAGE
+        write_header(sections[k], "")
+        write_footer_pagenum(sections[k], empty=True)
+        report.append({"action": "前置区(摘要前)篇眉页脚清空"
+                       + ("、置于奇数页(单面打印自动补空白页)" if odd else ""),
+                       "section": k})
 
     roman_started = False
     arabic_started = False
@@ -249,8 +493,10 @@ def main():
             report.append({"action": "封面/前置部分,无篇眉页码", "part": part["title"]})
             continue
 
-        # 分节符类型:正文第一章另页右页(奇数页),其余下一页
-        sec.start_type = (WD_SECTION.ODD_PAGE if part is body_first
+        # 分节符类型:正文第一章另页右页(奇数页);摘要(双面印刷起点)也置于
+        # 奇数页;其余各部分下一页即可。
+        front_odd = part is front_first and front_blank
+        sec.start_type = (WD_SECTION.ODD_PAGE if (part is body_first or front_odd)
                           else WD_SECTION.NEW_PAGE)
         # 页码
         if part["kind"] == "front":
@@ -264,10 +510,11 @@ def main():
             arabic_started = True
             num_desc = "阿拉伯数字" + ("(从1起)" if part is body_first else "(连续)")
         # 篇眉与页脚
-        write_header(sec, part["title"])
+        hdr_text = part.get("header", part["title"])
+        write_header(sec, hdr_text)
         write_footer_pagenum(sec)
         report.append({"action": "设置篇眉与页码", "part": part["title"],
-                       "篇眉": part["title"], "页码": num_desc,
+                       "篇眉": hdr_text, "页码": num_desc,
                        "分节类型": "奇数页" if part is body_first else "下一页"})
 
     disable_even_odd_and_titlepg(doc, sections)

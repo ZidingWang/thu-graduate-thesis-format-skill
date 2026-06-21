@@ -16,6 +16,7 @@ ROLE_CN = {
     "reference_entry": "参考文献条目", "toc_chapter": "目录章行",
     "toc_entry": "目录/清单行", "keywords": "关键词行",
     "table_cell": "表格单元格", "section": "页面设置",
+    "table_borders": "三线表边框", "image_layout_borders": "图片占位表(清边框)",
 }
 
 
@@ -85,11 +86,22 @@ def main():
         num = json.loads(Path(args.numbering).read_text(encoding="utf-8"))
         ch = [c for c in num["changes"] if "old" in c]
         un = [c for c in num["changes"] if "unresolved" in c]
-        lines.append(f"## 编号体例统一(目标连接符:{num['target']})")
-        lines.append("")
-        lines.append(f"原统计:'-' {num['census_before']['hyphen']} 处,"
-                     f"'.' {num['census_before']['dot']} 处。"
-                     f"已替换 {len(ch)} 处(这是全流程唯一的文字改动,逐条如下):")
+        cb = num.get("census_before", {})
+        if "target_figtab" in num:  # 新版:图/表 与 公式 两套独立统一
+            lines.append(f"## 编号体例统一(图/表→'{num['target_figtab']}',"
+                         f"公式→'{num['target_formula']}',两套各自独立)")
+            lines.append("")
+            fig = cb.get("figtab", {"hyphen": 0, "dot": 0})
+            form = cb.get("formula", {"hyphen": 0, "dot": 0})
+            tail = "(这是全流程唯一的文字改动,逐条如下):" if ch else ",两套各自一致,未改动。"
+            lines.append(f"原统计:图/表 '-' {fig['hyphen']} 处 / '.' {fig['dot']} 处;"
+                         f"公式 '-' {form['hyphen']} 处 / '.' {form['dot']} 处。"
+                         f"已替换 {len(ch)} 处{tail}")
+        else:  # 兼容旧版(单一连接符)报告
+            lines.append(f"## 编号体例统一(目标连接符:{num.get('target', '-')})")
+            lines.append("")
+            lines.append(f"原统计:'-' {cb.get('hyphen', 0)} 处,'.' {cb.get('dot', 0)} 处。"
+                         f"已替换 {len(ch)} 处:")
         for c in ch:
             lines.append(f"- {c['loc']}: 「{c['old']}」→「{c['new']}」")
         if un:
